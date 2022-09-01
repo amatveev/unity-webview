@@ -24,6 +24,7 @@ package net.gree.unitywebview;
 import android.Manifest;
 import android.app.Activity;
 import android.app.Fragment;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -40,6 +41,7 @@ import android.util.Base64;
 import android.util.Log;
 import android.util.Pair;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup.LayoutParams;
 import android.view.ViewTreeObserver.OnGlobalLayoutListener;
@@ -65,14 +67,17 @@ import androidx.core.content.FileProvider;
 import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.List;
+import java.util.Queue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.regex.Matcher;
@@ -101,7 +106,7 @@ class CWebViewPluginInterface {
         }
         a.runOnUiThread(new Runnable() {public void run() {
             if (mPlugin.IsInitialized()) {
-                UnityPlayer.UnitySendMessage(mGameObject, method, message);
+                mPlugin.MyUnitySendMessage(mGameObject, method, message);
             }
         }});
     }
@@ -112,6 +117,7 @@ public class CWebViewPlugin extends Fragment {
     private static final int REQUEST_CODE = 100001;
 
     private static FrameLayout layout = null;
+    private Queue<String> mMessages = new ArrayDeque<String>();
     private WebView mWebView;
     private View mVideoView;
     private OnGlobalLayoutListener mGlobalLayoutListener;
@@ -119,6 +125,7 @@ public class CWebViewPlugin extends Fragment {
     private int progress;
     private boolean canGoBack;
     private boolean canGoForward;
+    private boolean mInteractionEnabled = true;
     private boolean mAlertDialogEnabled;
     private boolean mAllowVideoCapture;
     private boolean mAllowAudioCapture;
@@ -252,16 +259,16 @@ public class CWebViewPlugin extends Fragment {
             int hasPerm2 = pm.checkPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE, activity.getPackageName());
             int hasPerm3 = pm.checkPermission(android.Manifest.permission.CAMERA, activity.getPackageName());
             if (hasPerm1 != PackageManager.PERMISSION_GRANTED
-                || hasPerm2 != PackageManager.PERMISSION_GRANTED
-                || hasPerm3 != PackageManager.PERMISSION_GRANTED) {
+                    || hasPerm2 != PackageManager.PERMISSION_GRANTED
+                    || hasPerm3 != PackageManager.PERMISSION_GRANTED) {
                 if (CWebViewPlugin.isDestroyed(activity)) {
                     return false;
                 }
                 activity.runOnUiThread(new Runnable() {public void run() {
                     String[] PERMISSIONS = {
-                        Manifest.permission.READ_EXTERNAL_STORAGE,
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
-                        Manifest.permission.CAMERA
+                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                            Manifest.permission.CAMERA
                     };
                     requestPermissions(PERMISSIONS, REQUEST_CODE);
                 }});
@@ -270,6 +277,18 @@ public class CWebViewPlugin extends Fragment {
             return true;
         } else {
             return true;
+        }
+    }
+
+    public String GetMessage() {
+        synchronized(mMessages) {
+            return (mMessages.size() > 0) ? mMessages.poll() : null;
+        }
+    }
+
+    public void MyUnitySendMessage(String gameObject, String method, String message) {
+        synchronized(mMessages) {
+            mMessages.add(method + ":" + message);
         }
     }
 
@@ -298,10 +317,10 @@ public class CWebViewPlugin extends Fragment {
                 mTransactions.add(Pair.create("add", self));
             } else {
                 a
-                    .getFragmentManager()
-                    .beginTransaction()
-                    .add(0, self, "CWebViewPlugin" + mInstanceId)
-                    .commitAllowingStateLoss();
+                        .getFragmentManager()
+                        .beginTransaction()
+                        .add(0, self, "CWebViewPlugin" + mInstanceId)
+                        .commitAllowingStateLoss();
             }
 
             mAlertDialogEnabled = true;
@@ -337,7 +356,7 @@ public class CWebViewPlugin extends Fragment {
                     final String[] requestedResources = request.getResources();
                     for (String r : requestedResources) {
                         if ((r.equals(PermissionRequest.RESOURCE_VIDEO_CAPTURE) && mAllowVideoCapture)
-                            || (r.equals(PermissionRequest.RESOURCE_AUDIO_CAPTURE) && mAllowAudioCapture)) {
+                                || (r.equals(PermissionRequest.RESOURCE_AUDIO_CAPTURE) && mAllowAudioCapture)) {
                             request.grant(requestedResources);
                             // if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                             //     a.runOnUiThread(new Runnable() {public void run() {
@@ -402,7 +421,7 @@ public class CWebViewPlugin extends Fragment {
                         result.cancel();
                         return true;
                     }
-                   return super.onJsPrompt(view, url, message, defaultValue, result);
+                    return super.onJsPrompt(view, url, message, defaultValue, result);
                 }
 
                 @Override
@@ -551,9 +570,9 @@ public class CWebViewPlugin extends Fragment {
                         }
 
                         return new WebResourceResponse(
-                            urlCon.getContentType().split(";", 2)[0],
-                            urlCon.getContentEncoding(),
-                            urlCon.getInputStream()
+                                urlCon.getContentType().split(";", 2)[0],
+                                urlCon.getContentEncoding(),
+                                urlCon.getInputStream()
                         );
 
                     } catch (Exception e) {
@@ -562,7 +581,8 @@ public class CWebViewPlugin extends Fragment {
                 }
 
                 @Override
-                public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                public boolean shouldOverrideUrlLoading(WebView view, String url)
+                {
                     canGoBack = webView.canGoBack();
                     canGoForward = webView.canGoForward();
                     boolean pass = true;
@@ -582,20 +602,49 @@ public class CWebViewPlugin extends Fragment {
                         mWebViewPlugin.call("CallOnHooked", url);
                         return true;
                     } else if (!url.toLowerCase().endsWith(".pdf")
-                               && !url.startsWith("https://maps.app.goo.gl")
-                               && (url.startsWith("http://")
-                                   || url.startsWith("https://")
-                                   || url.startsWith("file://")
-                                   || url.startsWith("javascript:"))) {
+                            && !url.startsWith("https://maps.app.goo.gl")
+                            && (url.startsWith("http://")
+                            || url.startsWith("https://")
+                            || url.startsWith("file://")
+                            || url.startsWith("javascript:"))) {
                         mWebViewPlugin.call("CallOnStarted", url);
                         // Let webview handle the URL
                         return false;
                     }
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                    PackageManager pm = a.getPackageManager();
-                    List<ResolveInfo> apps = pm.queryIntentActivities(intent, 0);
-                    if (apps.size() > 0) {
-                        view.getContext().startActivity(intent);
+
+                    //try to find browse activity to handle uri
+                    Uri parsedUri = Uri.parse(url);
+                    PackageManager packageManager = getActivity().getPackageManager();
+                    Intent browseIntent = new Intent(Intent.ACTION_VIEW).setData(parsedUri);
+                    if (browseIntent.resolveActivity(packageManager) != null) {
+                        getActivity().startActivity(browseIntent);
+                        return true;
+                    }
+                    //if not activity found, try to parse intent://
+                    if (url.startsWith("intent:")) {
+                        try {
+                            Intent intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME);
+                            if (intent.resolveActivity(getActivity().getPackageManager()) != null) {
+                                getActivity().startActivity(intent);
+                                return true;
+                            }
+                            //try to find fallback url
+                            String fallbackUrl = intent.getStringExtra("browser_fallback_url");
+                            if (fallbackUrl != null) {
+                                webView.loadUrl(fallbackUrl);
+                                return true;
+                            }
+                            //invite to install
+                            Intent marketIntent = new Intent(Intent.ACTION_VIEW).setData(
+                                    Uri.parse("market://details?id=" + intent.getPackage()));
+                            if (marketIntent.resolveActivity(packageManager) != null) {
+                                getActivity().startActivity(marketIntent);
+                                return true;
+                            }
+                        } catch (URISyntaxException e) {
+                            //not an intent uri
+                            Log.e("CWebViewPlugin", e.toString());
+                        }
                     }
                     return true;
                 }
@@ -636,25 +685,25 @@ public class CWebViewPlugin extends Fragment {
             // cf. https://forum.unity.com/threads/unity-ios-dark-mode.805344/#post-6476051
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 switch (androidForceDarkMode) {
-                case 0:
+                    case 0:
                     {
                         Configuration configuration = UnityPlayer.currentActivity.getResources().getConfiguration();
                         switch (configuration.uiMode & Configuration.UI_MODE_NIGHT_MASK) {
-                        case Configuration.UI_MODE_NIGHT_NO:
-                            webSettings.setForceDark(WebSettings.FORCE_DARK_OFF);
-                            break;
-                        case Configuration.UI_MODE_NIGHT_YES:
-                            webSettings.setForceDark(WebSettings.FORCE_DARK_ON);
-                            break;
+                            case Configuration.UI_MODE_NIGHT_NO:
+                                webSettings.setForceDark(WebSettings.FORCE_DARK_OFF);
+                                break;
+                            case Configuration.UI_MODE_NIGHT_YES:
+                                webSettings.setForceDark(WebSettings.FORCE_DARK_ON);
+                                break;
                         }
                     }
                     break;
-                case 1:
-                    webSettings.setForceDark(WebSettings.FORCE_DARK_OFF);
-                    break;
-                case 2:
-                    webSettings.setForceDark(WebSettings.FORCE_DARK_ON);
-                    break;
+                    case 1:
+                        webSettings.setForceDark(WebSettings.FORCE_DARK_OFF);
+                        break;
+                    case 2:
+                        webSettings.setForceDark(WebSettings.FORCE_DARK_ON);
+                        break;
                 }
             }
 
@@ -662,22 +711,31 @@ public class CWebViewPlugin extends Fragment {
                 webView.setBackgroundColor(0x00000000);
             }
 
+            // cf. https://stackoverflow.com/questions/3853794/disable-webview-touch-events-in-android/3856199#3856199
+            webView.setOnTouchListener(
+                    new View.OnTouchListener() {
+                        @Override
+                        public boolean onTouch(View view, MotionEvent event) {
+                            return !mInteractionEnabled;
+                        }
+                    });
+
             if (layout == null || layout.getParent() != a.findViewById(android.R.id.content)) {
                 layout = new FrameLayout(a);
                 a.addContentView(
-                    layout,
-                    new LayoutParams(
-                        LayoutParams.MATCH_PARENT,
-                        LayoutParams.MATCH_PARENT));
+                        layout,
+                        new LayoutParams(
+                                LayoutParams.MATCH_PARENT,
+                                LayoutParams.MATCH_PARENT));
                 layout.setFocusable(true);
                 layout.setFocusableInTouchMode(true);
             }
             layout.addView(
-                webView,
-                new FrameLayout.LayoutParams(
-                    LayoutParams.MATCH_PARENT,
-                    LayoutParams.MATCH_PARENT,
-                    Gravity.NO_GRAVITY));
+                    webView,
+                    new FrameLayout.LayoutParams(
+                            LayoutParams.MATCH_PARENT,
+                            LayoutParams.MATCH_PARENT,
+                            Gravity.NO_GRAVITY));
             mWebView = webView;
         }});
 
@@ -709,10 +767,14 @@ public class CWebViewPlugin extends Fragment {
                     bottomPadding = realSize.y - (location[1] + rootView.getHeight());
                 }
                 int heightDiff = rootView.getHeight() - (r.bottom - r.top);
+                String param = "" ;
                 if (heightDiff > 0 && (heightDiff + bottomPadding) > (h + bottomPadding) / 3) { // assume that this means that the keyboard is on
-                    UnityPlayer.UnitySendMessage(gameObject, "SetKeyboardVisible", "true");
+                    param = "true";
                 } else {
-                    UnityPlayer.UnitySendMessage(gameObject, "SetKeyboardVisible", "false");
+                    param = "false";
+                }
+                if (IsInitialized()) {
+                    MyUnitySendMessage(gameObject, "SetKeyboardVisible", param);
                 }
             }
         };
@@ -749,7 +811,7 @@ public class CWebViewPlugin extends Fragment {
         Intent contentSelectionIntent = new Intent(Intent.ACTION_GET_CONTENT);
         contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE);
         contentSelectionIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        contentSelectionIntent.setType("image/*");
+        contentSelectionIntent.setType("*/*");
 
         Intent[] intentArray;
         if(takePictureIntent != null) {
@@ -775,9 +837,9 @@ public class CWebViewPlugin extends Fragment {
             storageDir.mkdirs();
         }
         File imageFile = File.createTempFile(imageFileName,  /* prefix */
-                                             ".jpg",         /* suffix */
-                                             storageDir      /* directory */
-                                             );
+                ".jpg",         /* suffix */
+                storageDir      /* directory */
+        );
         return imageFile;
     }
 
@@ -786,6 +848,7 @@ public class CWebViewPlugin extends Fragment {
         final CWebViewPlugin self = this;
         final WebView webView = mWebView;
         mWebView = null;
+        mMessages.clear();
         if (CWebViewPlugin.isDestroyed(a)) {
             return;
         }
@@ -814,10 +877,10 @@ public class CWebViewPlugin extends Fragment {
                 mTransactions.add(Pair.create("remove", self));
             } else {
                 a
-                    .getFragmentManager()
-                    .beginTransaction()
-                    .remove(self)
-                    .commitAllowingStateLoss();
+                        .getFragmentManager()
+                        .beginTransaction()
+                        .remove(self)
+                        .commitAllowingStateLoss();
             }
 
         }});
@@ -933,7 +996,7 @@ public class CWebViewPlugin extends Fragment {
 
     public void SetMargins(int left, int top, int right, int bottom) {
         final FrameLayout.LayoutParams params
-            = new FrameLayout.LayoutParams(
+                = new FrameLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT,
                 LayoutParams.MATCH_PARENT,
                 Gravity.NO_GRAVITY);
@@ -966,6 +1029,16 @@ public class CWebViewPlugin extends Fragment {
             } else {
                 mWebView.setVisibility(View.GONE);
             }
+        }});
+    }
+
+    public void SetInteractionEnabled(final boolean enabled) {
+        final Activity a = UnityPlayer.currentActivity;
+        if (CWebViewPlugin.isDestroyed(a)) {
+            return;
+        }
+        a.runOnUiThread(new Runnable() {public void run() {
+            mInteractionEnabled = enabled;
         }});
     }
 
@@ -1056,20 +1129,20 @@ public class CWebViewPlugin extends Fragment {
                     for (Pair<String, CWebViewPlugin> pair : mTransactions) {
                         CWebViewPlugin self = pair.second;
                         switch (pair.first) {
-                        case "add":
-                            a
-                                .getFragmentManager()
-                                .beginTransaction()
-                                .add(0, self, "CWebViewPlugin" + mInstanceId)
-                                .commitAllowingStateLoss();
-                            break;
-                        case "remove":
-                            a
-                                .getFragmentManager()
-                                .beginTransaction()
-                                .remove(self)
-                                .commitAllowingStateLoss();
-                            break;
+                            case "add":
+                                a
+                                        .getFragmentManager()
+                                        .beginTransaction()
+                                        .add(0, self, "CWebViewPlugin" + mInstanceId)
+                                        .commitAllowingStateLoss();
+                                break;
+                            case "remove":
+                                a
+                                        .getFragmentManager()
+                                        .beginTransaction()
+                                        .remove(self)
+                                        .commitAllowingStateLoss();
+                                break;
                         }
                     }
                     mTransactions.clear();
@@ -1135,20 +1208,20 @@ public class CWebViewPlugin extends Fragment {
     {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
         {
-           CookieManager.getInstance().removeAllCookies(null);
-           CookieManager.getInstance().flush();
+            CookieManager.getInstance().removeAllCookies(null);
+            CookieManager.getInstance().flush();
         } else {
-           final Activity a = UnityPlayer.currentActivity;
-           if (CWebViewPlugin.isDestroyed(a)) {
-               return;
-           }
-           CookieSyncManager cookieSyncManager = CookieSyncManager.createInstance(a);
-           cookieSyncManager.startSync();
-           CookieManager cookieManager = CookieManager.getInstance();
-           cookieManager.removeAllCookie();
-           cookieManager.removeSessionCookie();
-           cookieSyncManager.stopSync();
-           cookieSyncManager.sync();
+            final Activity a = UnityPlayer.currentActivity;
+            if (CWebViewPlugin.isDestroyed(a)) {
+                return;
+            }
+            CookieSyncManager cookieSyncManager = CookieSyncManager.createInstance(a);
+            cookieSyncManager.startSync();
+            CookieManager cookieManager = CookieManager.getInstance();
+            cookieManager.removeAllCookie();
+            cookieManager.removeSessionCookie();
+            cookieSyncManager.stopSync();
+            cookieSyncManager.sync();
         }
     }
 
@@ -1156,13 +1229,13 @@ public class CWebViewPlugin extends Fragment {
     {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
         {
-           CookieManager.getInstance().flush();
+            CookieManager.getInstance().flush();
         } else {
-           final Activity a = UnityPlayer.currentActivity;
-           CookieSyncManager cookieSyncManager = CookieSyncManager.createInstance(a);
-           cookieSyncManager.startSync();
-           cookieSyncManager.stopSync();
-           cookieSyncManager.sync();
+            final Activity a = UnityPlayer.currentActivity;
+            CookieSyncManager cookieSyncManager = CookieSyncManager.createInstance(a);
+            cookieSyncManager.startSync();
+            cookieSyncManager.stopSync();
+            cookieSyncManager.sync();
         }
     }
 
@@ -1176,23 +1249,23 @@ public class CWebViewPlugin extends Fragment {
     {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
         {
-           CookieManager cookieManager = CookieManager.getInstance();
-           for (String header : setCookieHeaders)
-           {
-              cookieManager.setCookie(url, header);
-           }
-           cookieManager.flush();
+            CookieManager cookieManager = CookieManager.getInstance();
+            for (String header : setCookieHeaders)
+            {
+                cookieManager.setCookie(url, header);
+            }
+            cookieManager.flush();
         } else {
-           final Activity a = UnityPlayer.currentActivity;
-           CookieSyncManager cookieSyncManager = CookieSyncManager.createInstance(a);
-           cookieSyncManager.startSync();
-           CookieManager cookieManager = CookieManager.getInstance();
-           for (String header : setCookieHeaders)
-           {
-              cookieManager.setCookie(url, header);
-           }
-           cookieSyncManager.stopSync();
-           cookieSyncManager.sync();
+            final Activity a = UnityPlayer.currentActivity;
+            CookieSyncManager cookieSyncManager = CookieSyncManager.createInstance(a);
+            cookieSyncManager.startSync();
+            CookieManager cookieManager = CookieManager.getInstance();
+            for (String header : setCookieHeaders)
+            {
+                cookieManager.setCookie(url, header);
+            }
+            cookieSyncManager.stopSync();
+            cookieSyncManager.sync();
         }
     }
 
